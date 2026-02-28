@@ -3,8 +3,11 @@
 Training runtime MCP: collect analog signals from MCU pins, run preprocessing pipeline,
 and save result to CSV (format: time x sensors).
 
-Usage (from repo root or arduino-q):
-  python -m arduino-q.training_runtime.MCP [--duration 60] [--interval 0.01] [--output data.csv]
+Scripts assume they are run from inside training_runtime/ and that pipelines/ is
+resolved as if it lived inside training_runtime/ (parent arduino-q is added to path).
+
+Usage (from inside arduino-q/training_runtime/):
+  python MCP.py --duration 10 --output training_data.csv
   # or from arduino-q/:
   python -m training_runtime.MCP --duration 10 --output training_data.csv
 
@@ -14,16 +17,15 @@ MCU: expects readAnalogChannels() returning "a0,a1,a2,a3" (pins A0–A3 per MCU.
 
 import argparse
 import csv
+import os
 import sys
 import time
 
-# Ensure arduino-q is on path so we can import pipelines and training_runtime
-if __name__ == "__main__":
-    import os
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _arduino_q = os.path.dirname(_here)
-    if os.path.basename(_arduino_q) == "arduino-q" and _arduino_q not in sys.path:
-        sys.path.insert(0, _arduino_q)
+# Run-as-if from training_runtime: add parent (arduino-q) so pipelines and training_runtime import
+_here = os.path.dirname(os.path.abspath(__file__))
+_parent = os.path.dirname(_here)
+if _parent not in sys.path:
+    sys.path.insert(0, _parent)
 
 import numpy as np
 

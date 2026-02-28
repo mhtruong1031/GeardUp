@@ -6,23 +6,27 @@
 #define EMG_PIN_1 A2
 #define EMG_PIN_2 A3
 
+String readAnalogChannels();
+
 void setup() {
     Serial.begin(115200);
-    Bridge.begin();
 
-    Bridge.provide("readAnalogChannels", readAnalogChannels);
+    if (!Bridge.begin()) {
+        while (true) {}
+    }
 
-    // Register PinMode for Inputs
     pinMode(EEG_PIN_1, INPUT);
     pinMode(EEG_PIN_2, INPUT);
     pinMode(EMG_PIN_1, INPUT);
     pinMode(EMG_PIN_2, INPUT);
-
     analogReadResolution(12);
+
+    if (!Bridge.provide("readAnalogChannels", readAnalogChannels)) {
+        while (true) {}
+    }
 }
 
 void loop() {
-    Bridge.update();   // handle RPC from MPU
     delay(10);
 }
 

@@ -16,17 +16,25 @@ Collects analog signals from the Arduino Uno Q MCU pins, runs the preprocessing 
 
 ## Usage
 
-From the `arduino-q` directory (so `pipelines` and `training_runtime` are importable):
+Scripts are written to run **from inside `training_runtime/`**; `pipelines/` is resolved as if it lived inside `training_runtime/` (the parent `arduino-q` directory is added to `sys.path`).
+
+From **inside** `arduino-q/training_runtime/`:
 
 ```bash
 # Collect 10 s at 100 Hz, save to training_data.csv (with preprocessing)
-python -m training_runtime.MCP --duration 10 --interval 0.01 --output training_data.csv
+python MCP.py --duration 10 --interval 0.01 --output training_data.csv
 
 # Raw data only (no preprocessing)
-python -m training_runtime.MCP --duration 5 --no-preprocess -o raw.csv
+python MCP.py --duration 5 --no-preprocess -o raw.csv
 
 # Custom Bridge socket (when using arduino-router)
-python -m training_runtime.MCP --socket /var/run/arduino-router.sock --output data.csv
+python MCP.py --socket /var/run/arduino-router.sock --output data.csv
+```
+
+From the `arduino-q` directory you can still run as a module:
+
+```bash
+python -m training_runtime.MCP --duration 10 --output training_data.csv
 ```
 
 When running on the Arduino MPU (e.g. in App Lab), the script uses `arduino.app_utils.Bridge` if available; otherwise it uses the Unix socket and `msgpack` (see `bridge_client.py`).
@@ -37,8 +45,8 @@ When running on the Arduino MPU (e.g. in App Lab), the script uses `arduino.app_
 |------|------|
 | `MCP.py` | Entrypoint: collect → preprocess → CSV (time × sensors). |
 | `bridge_client.py` | Bridge client: `app_utils.Bridge` on device, or SocketBridge (msgpack) to arduino-router. |
-| `MCU.cpp` | MCU sketch: `readAnalogChannels()` reading A0–A3, registered with `Arduino_Bridge`. |
-| `pipelines/preprocessing.py` | `PreprocessingPipeline.preprocess(data)` — input `sensors × time`, output same shape (stub by default). |
+| `MCU.cpp` | MCU sketch: `readAnalogChannels()` reading A0–A3, registered with `Arduino_RouterBridge` (`Bridge.provide()`). |
+| `pipelines/preprocessing.py` (in `arduino-q/pipelines/`, imported as if under `training_runtime/`) | `PreprocessingPipeline.preprocess(data)` — input `sensors × time`, output same shape. |
 
 ## Dependencies
 

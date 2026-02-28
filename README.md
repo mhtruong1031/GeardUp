@@ -22,7 +22,7 @@ This directory contains firmware and related code for the **Arduino Uno Q**. It 
 
 Used **after the model is trained** and you want to run **inference** in production.
 
-- **`MCU.cpp`** — Firmware that reads analog channels (EEG on A0/A1, EMG on A2/A3), uses `Arduino_Bridge` to expose `readAnalogChannels` via RPC, and communicates with the laptop (MPU).
+- **`MCU.cpp`** — Firmware that reads analog channels (EEG on A0/A1, EMG on A2/A3), uses `Arduino_RouterBridge` to expose `readAnalogChannels` via RPC, and communicates with the laptop (MPU).
 - **`MCP.py`** — Laptop-side interface to the MCU (e.g. calling the bridge, sending/receiving data for inference).
 
 Deploy this runtime when the pipeline is: **Arduino reads sensors → laptop runs the trained model → results used on device.**
