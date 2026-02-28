@@ -1,0 +1,2 @@
+numpy>=1.20
+msgpack>=1.0
