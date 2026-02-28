@@ -1,4 +1,4 @@
-#include <Arduino_Bridge.h>
+#include <Arduino_RouterBridge.h>
 
 #define EEG_PIN_1 A0 
 #define EEG_PIN_2 A1 
@@ -10,7 +10,7 @@ void setup() {
     Serial.begin(115200);
     Bridge.begin();
 
-    Bridge.registerFunction("readAnalogChannels", readAnalogChannels);
+    Bridge.provide("readAnalogChannels", readAnalogChannels);
 
     // Register PinMode for Inputs
     pinMode(EEG_PIN_1, INPUT);
