@@ -27,6 +27,7 @@ from .config import (
     BANDPASS_LOW_HZ,
     BANDPASS_HIGH_HZ,
     CHANNEL_KEYS,
+    BOTH_KEY,
     SAMPLE_RATE,
     PLOT_HISTORY_SEC,
     LEVEL_METRIC,
@@ -99,7 +100,8 @@ def run(
     # Per-channel: recent levels for percentile-based rest detection (non-circular)
     rest_level_deques = [collections.deque(maxlen=REST_WINDOW_CHUNKS) for _ in range(NUM_CHANNELS)]
     initial_levels = [[] for _ in range(NUM_CHANNELS)]  # for initial baseline when no calibration
-    active = [False] * NUM_CHANNELS
+    active = [False] * NUM_CHANNELS  # for plot: which channels are above threshold
+    current_key_pressed: str | None = None  # one of 'd', 'a', 'w', or None
     key_controller = KeyController()
 
     plot_len = int(SAMPLE_RATE * PLOT_HISTORY_SEC)
@@ -111,7 +113,7 @@ def run(
         fig, axes = plt.subplots(NUM_CHANNELS, 1, sharex=True, figsize=(8, 4))
         if NUM_CHANNELS == 1:
             axes = [axes]
-        fig.suptitle("EMG bandpass abs — Ch0: 'd', Ch1: 'a' (baseline + percentile rest, EMA when at rest)")
+        fig.suptitle("EMG bandpass abs — Ch0: 'd', Ch1: 'a', both: 'w' (baseline + percentile rest)")
         line_handles = [ax.plot([], [], "b-", lw=0.8)[0] for ax in axes]
         thresh_lines = []
         for ch, ax in enumerate(axes):
@@ -128,7 +130,7 @@ def run(
         print(f"  Calibration loaded: baseline per channel, rest window={REST_WINDOW_CHUNKS} chunks, rest percentile={REST_PERCENTILE}")
     else:
         print(f"  No calibration: initial baseline from first {INITIAL_WINDOW_CHUNKS} chunks; run calibrate for best results.")
-    print("Ch0 -> 'd', Ch1 -> 'a'. Ctrl+C to stop.\n")
+    print("Ch0 -> 'd', Ch1 -> 'a', both -> 'w'. Ctrl+C to stop.\n")
 
     try:
         with SpikerBox(port=port, input_buffer_size=buffer_size, num_channels=NUM_CHANNELS) as box:
@@ -172,20 +174,21 @@ def run(
                     ch for ch in range(NUM_CHANNELS)
                     if baseline_initialized[ch] and levels[ch] >= threshold_highs[ch] and CHANNEL_KEYS.get(ch) is not None
                 ]
-                winner = max(candidates, key=lambda ch: levels[ch]) if candidates else None
-
+                # Both active -> 'w'; only ch0 -> 'd'; only ch1 -> 'a'; none -> None (no fighting)
+                if len(candidates) >= 2:
+                    desired_key = BOTH_KEY
+                elif len(candidates) == 1:
+                    desired_key = CHANNEL_KEYS[candidates[0]]
+                else:
+                    desired_key = None
                 for ch in range(NUM_CHANNELS):
-                    key = CHANNEL_KEYS.get(ch)
-                    if key is None:
-                        continue
-                    if ch == winner:
-                        if not active[ch]:
-                            active[ch] = True
-                            key_controller.press(key)
-                    else:
-                        if active[ch]:
-                            active[ch] = False
-                            key_controller.release(key)
+                    active[ch] = ch in candidates
+                if desired_key != current_key_pressed:
+                    if current_key_pressed is not None:
+                        key_controller.release(current_key_pressed)
+                    current_key_pressed = desired_key
+                    if current_key_pressed is not None:
+                        key_controller.press(current_key_pressed)
 
                 if plot_live and fig is not None and plt.fignum_exists(fig.number):
                     n = len(plot_bufs[0])
@@ -205,18 +208,15 @@ def run(
                         fig.canvas.draw_idle()
                         plt.pause(0.001)
     finally:
-        for ch in range(NUM_CHANNELS):
-            if active[ch]:
-                key = CHANNEL_KEYS.get(ch)
-                if key is not None:
-                    key_controller.release(key)
+        if current_key_pressed is not None:
+            key_controller.release(current_key_pressed)
         if plot_live and fig is not None and plt.fignum_exists(fig.number):
             plt.close(fig)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="EMG keyboard control: bandpass + per-channel baseline (calibration or initial window), Ch0->'d' Ch1->'a'."
+        description="EMG keyboard control: Ch0->'d', Ch1->'a', both->'w'. Bandpass + per-channel baseline (calibration or initial window)."
     )
     parser.add_argument("--port", default="/dev/cu.usbmodem101", help="Serial port")
     parser.add_argument("--buffer-size", type=int, default=2000, help="Serial read buffer size")

@@ -30,11 +30,13 @@ REST_PERCENTILE = 0.75
 # When calibration has noise_std: activation threshold = baseline + max(scale*baseline, NOISE_STD_K * noise_std).
 NOISE_STD_K = 3.0
 
-# Channel index -> key to hold while active.
+# Channel index -> key when only that channel is active.
 CHANNEL_KEYS = {
     0: "d",
     1: "a",
 }
+# Key to press when both channels are active at the same time (no fighting).
+BOTH_KEY = "w"
 
 # Sample rate (Human SpikerBox).
 SAMPLE_RATE = 5000.0
