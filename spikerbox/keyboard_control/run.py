@@ -24,6 +24,8 @@ from .config import (
     DEACTIVATE_SCALE,
     INITIAL_WINDOW_CHUNKS,
     MA_ALPHA,
+    REST_ALPHA_SCALE,
+    ACTIVATION_ALPHA_SCALE,
     BANDPASS_LOW_HZ,
     BANDPASS_HIGH_HZ,
     CHANNEL_KEYS,
@@ -156,29 +158,28 @@ def run(
                             baseline[ch] = float(np.median(initial_levels[ch]))
                             baseline_initialized[ch] = True
 
-                # Compute thresholds from current baselines before any baseline update
+                # Compute thresholds so we can choose baseline update rate: rest (1.25x) vs activation (0.5x)
                 threshold_highs = [
                     _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)
                     for ch in range(NUM_CHANNELS)
                 ]
-                # Update baseline only when at rest AND below activation threshold (never during activation)
                 for ch in range(NUM_CHANNELS):
                     if not baseline_initialized[ch]:
                         continue
                     level = levels[ch]
-                    if level >= threshold_highs[ch]:
-                        continue  # do not adjust baseline while activating
                     at_rest = False
                     if len(rest_level_deques[ch]) >= 2:
                         p = np.percentile(list(rest_level_deques[ch]), REST_PERCENTILE * 100)
                         at_rest = level <= p
-                    if at_rest:
-                        baseline[ch] = alpha * level + (1.0 - alpha) * baseline[ch]
+                    if level >= threshold_highs[ch]:
+                        # Activating: baseline moves half as much
+                        eff_alpha = min(alpha * ACTIVATION_ALPHA_SCALE, 1.0)
+                        baseline[ch] = eff_alpha * level + (1.0 - eff_alpha) * baseline[ch]
+                    elif at_rest:
+                        # At rest: baseline moves 1.25x as much
+                        eff_alpha = min(alpha * REST_ALPHA_SCALE, 1.0)
+                        baseline[ch] = eff_alpha * level + (1.0 - eff_alpha) * baseline[ch]
 
-                threshold_highs = [
-                    _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)
-                    for ch in range(NUM_CHANNELS)
-                ]
                 threshold_lows = [baseline[ch] * (1.0 + deact_scale) for ch in range(NUM_CHANNELS)]
 
                 candidates = [

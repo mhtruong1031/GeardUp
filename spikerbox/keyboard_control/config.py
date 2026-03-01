@@ -11,7 +11,10 @@ THRESHOLD_SCALE = 0.4  # e.g. 0.2 = 20% above baseline
 DEACTIVATE_SCALE = 0.1  # e.g. 0.05 = 5% above baseline
 # Baseline: EMA of levels when "at rest" (percentile-based rest detection).
 INITIAL_WINDOW_CHUNKS = 100  # when no calibration: use first N chunk levels to set initial baseline (median)
-MA_ALPHA = 0.05  # EMA of baseline (only updated when at rest); smaller = smoother
+MA_ALPHA = 0.05  # EMA of baseline; smaller = smoother
+# Baseline movement scale: use MA_ALPHA * REST_ALPHA_SCALE when at rest, MA_ALPHA * ACTIVATION_ALPHA_SCALE when above threshold
+REST_ALPHA_SCALE = 1.25  # baseline moves 1.25x as much when at rest
+ACTIVATION_ALPHA_SCALE = 0.5  # baseline moves half as much when above threshold (activating)
 # Bandpass filter (Hz). Applied to raw stream before level and baseline.
 BANDPASS_LOW_HZ = 50.0
 BANDPASS_HIGH_HZ = 400.0
@@ -26,7 +29,7 @@ LEVEL_METRIC = "p95"
 # Rest detection: sliding window of recent levels; "at rest" when current level <= REST_PERCENTILE of window.
 REST_WINDOW_SEC = 2.0
 REST_WINDOW_CHUNKS = 50  # number of recent level samples per channel for percentile (rest) detection
-REST_PERCENTILE = 0.75
+REST_PERCENTILE = 0.7
 # When calibration has noise_std: activation threshold = baseline + max(scale*baseline, NOISE_STD_K * noise_std).
 NOISE_STD_K = 3.0
 
