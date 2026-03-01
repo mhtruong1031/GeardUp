@@ -155,14 +155,25 @@ def run(
                         if len(initial_levels[ch]) >= INITIAL_WINDOW_CHUNKS:
                             baseline[ch] = float(np.median(initial_levels[ch]))
                             baseline_initialized[ch] = True
-                    else:
-                        # At rest = current level <= REST_PERCENTILE of recent levels (non-circular)
-                        at_rest = False
-                        if len(rest_level_deques[ch]) >= 2:
-                            p = np.percentile(list(rest_level_deques[ch]), REST_PERCENTILE * 100)
-                            at_rest = level <= p
-                        if at_rest:
-                            baseline[ch] = alpha * level + (1.0 - alpha) * baseline[ch]
+
+                # Compute thresholds from current baselines before any baseline update
+                threshold_highs = [
+                    _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)
+                    for ch in range(NUM_CHANNELS)
+                ]
+                # Update baseline only when at rest AND below activation threshold (never during activation)
+                for ch in range(NUM_CHANNELS):
+                    if not baseline_initialized[ch]:
+                        continue
+                    level = levels[ch]
+                    if level >= threshold_highs[ch]:
+                        continue  # do not adjust baseline while activating
+                    at_rest = False
+                    if len(rest_level_deques[ch]) >= 2:
+                        p = np.percentile(list(rest_level_deques[ch]), REST_PERCENTILE * 100)
+                        at_rest = level <= p
+                    if at_rest:
+                        baseline[ch] = alpha * level + (1.0 - alpha) * baseline[ch]
 
                 threshold_highs = [
                     _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)

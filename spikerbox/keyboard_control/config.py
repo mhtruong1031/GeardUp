@@ -6,7 +6,7 @@ import os
 
 NUM_CHANNELS = 2
 # Thresholds scaled to baseline: activate when level >= baseline * (1 + THRESHOLD_SCALE).
-THRESHOLD_SCALE = 0.45  # e.g. 0.2 = 20% above baseline
+THRESHOLD_SCALE = 0.4  # e.g. 0.2 = 20% above baseline
 # Deactivate when level < baseline * (1 + DEACTIVATE_SCALE) (hysteresis).
 DEACTIVATE_SCALE = 0.1  # e.g. 0.05 = 5% above baseline
 # Baseline: EMA of levels when "at rest" (percentile-based rest detection).
