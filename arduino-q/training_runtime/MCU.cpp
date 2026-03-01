@@ -35,6 +35,8 @@ String readAnalogChannels() {
     int a1 = analogRead(EEG_PIN_2);
     int a2 = analogRead(EMG_PIN_1);
     int a3 = analogRead(EMG_PIN_2);
-    return String(a0) + "," + String(a1) + "," + String(a2) + "," + String(a3);
+    String out = String(a0) + "," + String(a1) + "," + String(a2) + "," + String(a3);
+    Serial.println(out);
+    return out;
 }
 

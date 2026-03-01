@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Training runtime MCP: collect analog signals from MCU pins, run preprocessing pipeline,
-and save result to CSV (format: time x sensors).
+Training runtime MCP: collect analog signals from MCU pins, print data to stdout,
+and save CSV (format: time x sensors) only on keyboard interrupt (Ctrl+C).
 
 Scripts assume they are run from inside training_runtime/ and that pipelines/ is
 resolved as if it lived inside training_runtime/ (parent arduino-q is added to path).
 
 Usage (from inside arduino-q/training_runtime/):
-  python MCP.py --duration 10 --output training_data.csv
+  python MCP.py --output training_data.csv
+  # Stop with Ctrl+C to write CSV.
   # or from arduino-q/:
-  python -m training_runtime.MCP --duration 10 --output training_data.csv
+  python -m training_runtime.MCP -o training_data.csv
 
 Bridge: uses arduino.app_utils.Bridge when on device, else SocketBridge to arduino-router.
 MCU: expects readAnalogChannels() returning "a0,a1,a2,a3" (pins A0–A3 per MCU.cpp).
@@ -37,33 +38,37 @@ def get_bridge(socket_path="/var/run/arduino-router.sock"):
     return _get_bridge(socket_path)
 
 
-def collect_raw_samples(bridge, duration_sec, interval_sec, num_sensors=4):
+def collect_raw_samples(bridge, interval_sec, num_sensors=4, print_samples=True):
     """
-    Call MCU readAnalogChannels() every interval_sec for duration_sec.
+    Call MCU readAnalogChannels() every interval_sec until KeyboardInterrupt.
     Returns (timestamps, data) where data is (n_samples, num_sensors) and timestamps (n_samples,).
     """
     timestamps = []
     rows = []
-    t_end = time.monotonic() + duration_sec
-    while time.monotonic() < t_end:
-        t = time.monotonic()
-        try:
-            raw = bridge.call("readAnalogChannels")
-        except Exception as e:
-            print(f"Bridge call failed: {e}", file=sys.stderr)
-            break
-        if raw is None:
-            continue
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8", errors="replace")
-        raw = str(raw).strip()
-        parts = [p.strip() for p in raw.split(",")]
-        if len(parts) < num_sensors:
-            continue
-        values = [float(parts[i]) for i in range(num_sensors)]
-        timestamps.append(t)
-        rows.append(values)
-        time.sleep(max(0.0, interval_sec - (time.monotonic() - t)))
+    try:
+        while True:
+            t = time.monotonic()
+            try:
+                raw = bridge.call("readAnalogChannels")
+            except Exception as e:
+                print(f"Bridge call failed: {e}", file=sys.stderr)
+                break
+            if raw is None:
+                continue
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            raw = str(raw).strip()
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) < num_sensors:
+                continue
+            values = [float(parts[i]) for i in range(num_sensors)]
+            timestamps.append(t)
+            rows.append(values)
+            if print_samples:
+                print(f"  {t:.3f}  " + "  ".join(f"{v:.1f}" for v in values), flush=True)
+            time.sleep(max(0.0, interval_sec - (time.monotonic() - t)))
+    except KeyboardInterrupt:
+        pass
     if not rows:
         return np.array([]), np.array([])
     return np.array(timestamps), np.array(rows, dtype=np.float64)
@@ -114,21 +119,23 @@ def run_pipeline_and_save_csv(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Training runtime: collect analog data, preprocess, save CSV (time x sensors)")
-    parser.add_argument("--duration", type=float, default=10.0, help="Collection duration in seconds")
+    parser = argparse.ArgumentParser(description="Training runtime: collect analog data, preprocess, save CSV on Ctrl+C (time x sensors)")
     parser.add_argument("--interval", type=float, default=0.01, help="Seconds between samples")
-    parser.add_argument("--output", "-o", default="training_data.csv", help="Output CSV path")
+    parser.add_argument("--output", "-o", default="training_data.csv", help="Output CSV path (written on Ctrl+C)")
     parser.add_argument("--socket", default="/var/run/arduino-router.sock", help="Bridge Unix socket path (if using SocketBridge)")
     parser.add_argument("--no-preprocess", action="store_true", help="Skip pipeline; save raw data only")
+    parser.add_argument("--no-print", action="store_true", help="Do not print each sample to stdout")
     args = parser.parse_args()
 
     bridge = get_bridge(args.socket)
-    print(f"Collecting for {args.duration}s at {args.interval}s interval...", flush=True)
-    timestamps, raw_data = collect_raw_samples(bridge, args.duration, args.interval)
+    print("Collecting until Ctrl+C... (data printed below; CSV saved on interrupt)", flush=True)
+    timestamps, raw_data = collect_raw_samples(
+        bridge, args.interval, print_samples=not args.no_print
+    )
     if raw_data.size == 0:
         print("No samples collected.", file=sys.stderr)
         return 1
-    print(f"Collected {len(timestamps)} samples.", flush=True)
+    print(f"\nCollected {len(timestamps)} samples. Saving CSV...", flush=True)
 
     pipeline = None if args.no_preprocess else PreprocessingPipeline()
     run_pipeline_and_save_csv(timestamps, raw_data, args.output, pipeline=pipeline)
