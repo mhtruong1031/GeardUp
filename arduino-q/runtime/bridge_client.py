@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bridge client for training_runtime.
+Bridge client for runtime.
 Connects to Arduino MCU via Unix socket (arduino-router) or uses arduino.app_utils when on device.
 Reference: arduino_uno_q_knowledge_base_and_playground/knowledge-base/Example-1/mpu/bridge_client.py
 """

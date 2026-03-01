@@ -1,7 +1,11 @@
 #include <Arduino_RouterBridge.h>
 
-#define EEG_PIN_1 A0 
-#define EEG_PIN_2 A1 
+#define MODE_MAIN 0
+#define MODE_TRAINING 1
+#define MODE MODE_MAIN
+
+#define EEG_PIN_1 A0
+#define EEG_PIN_2 A1
 
 #define EMG_PIN_1 A2
 #define EMG_PIN_2 A3
@@ -35,6 +39,9 @@ String readAnalogChannels() {
     int a1 = analogRead(EEG_PIN_2);
     int a2 = analogRead(EMG_PIN_1);
     int a3 = analogRead(EMG_PIN_2);
-    return String(a0) + "," + String(a1) + "," + String(a2) + "," + String(a3);
+    String out = String(a0) + "," + String(a1) + "," + String(a2) + "," + String(a3);
+#if MODE == MODE_TRAINING
+    Serial.println(out);
+#endif
+    return out;
 }
-

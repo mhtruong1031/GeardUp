@@ -1,6 +1,15 @@
-# Training runtime
+# Runtime (training & main)
 
-Collects analog signals from the Arduino Uno Q MCU pins, runs the preprocessing pipeline, and saves data as CSV (format: **time × sensors**).
+Single runtime for Arduino Uno Q: one MCU sketch and one MCP for both data collection (training) and inference (main). The MCU uses a **mode** switch to select behavior.
+
+## MCU mode switch
+
+In `MCU.cpp`, set at the top:
+
+- **`#define MODE MODE_MAIN`** — Production/inference: no Serial printing; use when running with laptop-side inference.
+- **`#define MODE MODE_TRAINING`** — Data collection: `readAnalogChannels()` also prints readings to Serial for visibility; use when collecting training data.
+
+Rebuild and reflash the sketch after changing `MODE`.
 
 ## Context (MCP & MCU)
 
@@ -16,25 +25,25 @@ Collects analog signals from the Arduino Uno Q MCU pins, runs the preprocessing 
 
 ## Usage
 
-Scripts are written to run **from inside `training_runtime/`**; `pipelines/` is resolved as if it lived inside `training_runtime/` (the parent `arduino-q` directory is added to `sys.path`).
+Scripts are written to run **from inside `runtime/`**; `pipelines/` is resolved as if it lived inside `runtime/` (the parent `arduino-q` directory is added to `sys.path`).
 
-From **inside** `arduino-q/training_runtime/`:
+From **inside** `arduino-q/runtime/`:
 
 ```bash
-# Collect 10 s at 100 Hz, save to training_data.csv (with preprocessing)
-python MCP.py --duration 10 --interval 0.01 --output training_data.csv
+# Collect at 100 Hz, save to training_data.csv on Ctrl+C (with preprocessing)
+python MCP.py --interval 0.01 --output training_data.csv
 
 # Raw data only (no preprocessing)
-python MCP.py --duration 5 --no-preprocess -o raw.csv
+python MCP.py --no-preprocess -o raw.csv
 
 # Custom Bridge socket (when using arduino-router)
 python MCP.py --socket /var/run/arduino-router.sock --output data.csv
 ```
 
-From the `arduino-q` directory you can still run as a module:
+From the `arduino-q` directory you can run as a module:
 
 ```bash
-python -m training_runtime.MCP --duration 10 --output training_data.csv
+python -m runtime.MCP -o training_data.csv
 ```
 
 When running on the Arduino MPU (e.g. in App Lab), the script uses `arduino.app_utils.Bridge` if available; otherwise it uses the Unix socket and `msgpack` (see `bridge_client.py`).
@@ -45,8 +54,8 @@ When running on the Arduino MPU (e.g. in App Lab), the script uses `arduino.app_
 |------|------|
 | `MCP.py` | Entrypoint: collect → preprocess → CSV (time × sensors). |
 | `bridge_client.py` | Bridge client: `app_utils.Bridge` on device, or SocketBridge (msgpack) to arduino-router. |
-| `MCU.cpp` | MCU sketch: `readAnalogChannels()` reading A0–A3, registered with `Arduino_RouterBridge` (`Bridge.provide()`). |
-| `pipelines/preprocessing.py` (in `arduino-q/pipelines/`, imported as if under `training_runtime/`) | `PreprocessingPipeline.preprocess(data)` — input `sensors × time`, output same shape. |
+| `MCU.cpp` | MCU sketch: `readAnalogChannels()` reading A0–A3, registered with `Arduino_RouterBridge` (`Bridge.provide()`). Set `MODE` to `MODE_MAIN` or `MODE_TRAINING`. |
+| `pipelines/preprocessing.py` (in `arduino-q/pipelines/`, imported as if under `runtime/`) | `PreprocessingPipeline.preprocess(data)` — input `sensors × time`, output same shape. |
 
 ## Dependencies
 
@@ -54,4 +63,4 @@ When running on the Arduino MPU (e.g. in App Lab), the script uses `arduino.app_
 - `numpy`
 - `msgpack` (only when using SocketBridge, i.e. when not on device with `arduino.app_utils`)
 
-Install: `pip install numpy msgpack`
+Install: `pip install -r requirements.txt` or `pip install numpy msgpack`

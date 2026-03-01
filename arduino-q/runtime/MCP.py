@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Training runtime MCP: collect analog signals from MCU pins, print data to stdout,
+Runtime MCP: collect analog signals from MCU pins, print data to stdout,
 and save CSV (format: time x sensors) only on keyboard interrupt (Ctrl+C).
 
-Scripts assume they are run from inside training_runtime/ and that pipelines/ is
-resolved as if it lived inside training_runtime/ (parent arduino-q is added to path).
+Scripts assume they are run from inside runtime/ and that pipelines/ is
+resolved as if it lived inside runtime/ (parent arduino-q is added to path).
 
-Usage (from inside arduino-q/training_runtime/):
+Usage (from inside arduino-q/runtime/):
   python MCP.py --output training_data.csv
   # Stop with Ctrl+C to write CSV.
   # or from arduino-q/:
-  python -m training_runtime.MCP -o training_data.csv
+  python -m runtime.MCP -o training_data.csv
 
 Bridge: uses arduino.app_utils.Bridge when on device, else SocketBridge to arduino-router.
 MCU: expects readAnalogChannels() returning "a0,a1,a2,a3" (pins A0–A3 per MCU.cpp).
@@ -22,7 +22,7 @@ import os
 import sys
 import time
 
-# Run-as-if from training_runtime: add parent (arduino-q) so pipelines and training_runtime import
+# Run-as-if from runtime: add parent (arduino-q) so pipelines and runtime import
 _here = os.path.dirname(os.path.abspath(__file__))
 _parent = os.path.dirname(_here)
 if _parent not in sys.path:
@@ -34,7 +34,7 @@ from pipelines.preprocessing import PreprocessingPipeline
 
 
 def get_bridge(socket_path="/var/run/arduino-router.sock"):
-    from training_runtime.bridge_client import get_bridge as _get_bridge
+    from runtime.bridge_client import get_bridge as _get_bridge
     return _get_bridge(socket_path)
 
 
@@ -119,7 +119,7 @@ def run_pipeline_and_save_csv(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Training runtime: collect analog data, preprocess, save CSV on Ctrl+C (time x sensors)")
+    parser = argparse.ArgumentParser(description="Runtime: collect analog data, preprocess, save CSV on Ctrl+C (time x sensors)")
     parser.add_argument("--interval", type=float, default=0.01, help="Seconds between samples")
     parser.add_argument("--output", "-o", default="training_data.csv", help="Output CSV path (written on Ctrl+C)")
     parser.add_argument("--socket", default="/var/run/arduino-router.sock", help="Bridge Unix socket path (if using SocketBridge)")
