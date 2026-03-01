@@ -129,6 +129,15 @@ class Preprocess:
         return np.array([self._fft_magnitude(row) for row in data])
 
 
+def moving_average(x: np.ndarray, window: int) -> np.ndarray:
+    """Running mean of 1D array with given window size (full only where enough samples)."""
+    x = np.asarray(x, dtype=float)
+    if window <= 0 or len(x) == 0:
+        return x
+    kernel = np.ones(window) / window
+    return np.convolve(x, kernel, mode="valid")
+
+
 class PreprocessingPipeline:
     """
     Legacy wrapper for backwards compatibility. Delegates to Preprocess.
