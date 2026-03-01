@@ -1,0 +1,7 @@
+pyserial
+numpy
+matplotlib
+torch
+scipy
+# pyttsx3  # optional: for TTS in inference (pip install pyttsx3)
+pynput  # for hold-to-record in silent_speech collect
