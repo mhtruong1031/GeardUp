@@ -5,14 +5,30 @@ Configuration for keyboard control: channels, threshold, key mappings.
 import os
 
 NUM_CHANNELS = 2
-# Fixed thresholds on abs(signal - baseline). Activate when level >= THRESHOLD_OFFSET.
-THRESHOLD_OFFSET = 300.0
-# Deactivate when level < DEACTIVATE_OFFSET (hysteresis; use <= THRESHOLD_OFFSET to avoid jitter).
-DEACTIVATE_OFFSET = 40.0
-# In-app calibration: record this many seconds at startup to compute baseline (if not loading from file).
-CALIBRATION_DURATION_SEC = 15.0
-# Number of consecutive below-threshold samples required before releasing the key.
-DEACTIVATE_BUFFER_SAMPLES = 2
+# Thresholds scaled to baseline: activate when level >= baseline * (1 + THRESHOLD_SCALE).
+THRESHOLD_SCALE = 0.45  # e.g. 0.2 = 20% above baseline
+# Deactivate when level < baseline * (1 + DEACTIVATE_SCALE) (hysteresis).
+DEACTIVATE_SCALE = 0.1  # e.g. 0.05 = 5% above baseline
+# Baseline: EMA of levels when "at rest" (percentile-based rest detection).
+INITIAL_WINDOW_CHUNKS = 100  # when no calibration: use first N chunk levels to set initial baseline (median)
+MA_ALPHA = 0.05  # EMA of baseline (only updated when at rest); smaller = smoother
+# Bandpass filter (Hz). Applied to raw stream before level and baseline.
+BANDPASS_LOW_HZ = 50.0
+BANDPASS_HIGH_HZ = 400.0
+
+# Calibration: explicit "hold still" phase to compute per-channel baseline and noise_std.
+CALIBRATION_DURATION_SEC = 5.0
+CALIBRATION_FILENAME = "keyboard_control_calibration.npz"
+DEFAULT_CALIBRATION_DIR = "data/keyboard_control"
+
+# Level metric per chunk: "max", "rms", or "p95" (95th percentile of |filtered|); p95 reduces spike sensitivity.
+LEVEL_METRIC = "p95"
+# Rest detection: sliding window of recent levels; "at rest" when current level <= REST_PERCENTILE of window.
+REST_WINDOW_SEC = 2.0
+REST_WINDOW_CHUNKS = 50  # number of recent level samples per channel for percentile (rest) detection
+REST_PERCENTILE = 0.75
+# When calibration has noise_std: activation threshold = baseline + max(scale*baseline, NOISE_STD_K * noise_std).
+NOISE_STD_K = 3.0
 
 # Channel index -> key to hold while active.
 CHANNEL_KEYS = {
@@ -25,21 +41,37 @@ SAMPLE_RATE = 5000.0
 # Live plot: seconds of history to show per channel.
 PLOT_HISTORY_SEC = 1.0
 
-# Calibration (reuse silent_speech format).
-DEFAULT_CALIBRATION_DIR = "data/silent_speech"
-CALIBRATION_FILENAME = "calibration.npz"
-EMG_OFFSET = 8250
+# SpikerBox 14-bit ADC range.
+ADC_MIN, ADC_MAX = 0, 16383
+
+
+def compute_level(filtered: "np.ndarray", metric: str) -> float:
+    """Compute single scalar level from bandpass-filtered chunk. metric in ('max', 'rms', 'p95')."""
+    import numpy as np
+    abs_f = np.asarray(filtered, dtype=np.float64).ravel()
+    if metric == "max":
+        return float(np.max(abs_f))
+    if metric == "rms":
+        return float(np.sqrt(np.mean(abs_f ** 2)))
+    if metric == "p95":
+        return float(np.percentile(abs_f, 95))
+    return float(np.max(abs_f))
 
 
 def load_calibration(dir_or_path: str):
-    """Load baseline mean from calibration.npz; returns shape (NUM_CHANNELS,) or None."""
-    import numpy as np
+    """
+    Load baseline and optional noise_std from a calibration file.
+    Returns dict with keys "baseline" (array), "noise_std" (array or None), or None if not found.
+    Pass a directory or full path to keyboard_control_calibration.npz.
+    """
     path = dir_or_path if dir_or_path.endswith(".npz") else os.path.join(dir_or_path, CALIBRATION_FILENAME)
     if not os.path.isfile(path):
         return None
     try:
+        import numpy as np
         data = np.load(path, allow_pickle=True)
-        mean = data["mean"]
-        return np.asarray(mean, dtype=np.float64)
+        baseline = np.asarray(data["baseline"], dtype=np.float64)
+        noise_std = np.asarray(data["noise_std"], dtype=np.float64) if "noise_std" in data else None
+        return {"baseline": baseline, "noise_std": noise_std}
     except Exception:
         return None

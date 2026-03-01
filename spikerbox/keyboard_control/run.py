@@ -1,86 +1,107 @@
 """
-Keyboard control: stream EMG from SpikerBox; when channel N is above a fixed threshold
-(baseline from calibration + offset), hold the configured key; on deactivation release it.
-Starts with a calibration period to record baseline. Channel 1 (index 0) -> 'd', channel 2 -> 'a'.
+Keyboard control: stream EMG from SpikerBox; bandpass filter, then per-channel baseline
+(loaded from calibration or initial window) with percentile-based rest detection and EMA
+adaptation. Channel 0 -> 'd', channel 1 -> 'a'.
 
 Usage:
   python -m spikerbox.keyboard_control.run --port /dev/cu.usbmodem101
+  python -m spikerbox.keyboard_control.calibrate --port /dev/cu.usbmodem101 --out data/keyboard_control  # run first for best results
 """
 
 import argparse
 import collections
-import os
-import time
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import signal as scipy_signal
 from pynput.keyboard import Controller as KeyController
 
 from spikerbox import SpikerBox
 
 from .config import (
     NUM_CHANNELS,
-    THRESHOLD_OFFSET,
-    DEACTIVATE_OFFSET,
-    DEACTIVATE_BUFFER_SAMPLES,
+    THRESHOLD_SCALE,
+    DEACTIVATE_SCALE,
+    INITIAL_WINDOW_CHUNKS,
+    MA_ALPHA,
+    BANDPASS_LOW_HZ,
+    BANDPASS_HIGH_HZ,
     CHANNEL_KEYS,
-    DEFAULT_CALIBRATION_DIR,
-    CALIBRATION_DURATION_SEC,
-    EMG_OFFSET,
     SAMPLE_RATE,
     PLOT_HISTORY_SEC,
+    LEVEL_METRIC,
+    REST_WINDOW_CHUNKS,
+    REST_PERCENTILE,
+    NOISE_STD_K,
+    DEFAULT_CALIBRATION_DIR,
+    CALIBRATION_FILENAME,
+    CALIBRATION_DURATION_SEC,
     load_calibration,
+    compute_level,
 )
 
 
-def run_calibration(box: SpikerBox, duration_sec: float) -> np.ndarray:
-    """Record for duration_sec and return per-channel mean baseline (shape NUM_CHANNELS)."""
-    target_samples = int(duration_sec * SAMPLE_RATE)
-    all_ch = [[] for _ in range(NUM_CHANNELS)]
-    total = 0
-    start = time.perf_counter()
-    print(f"Calibrating for {duration_sec:.0f} s — stay still (no muscle tension)...")
-    while total < target_samples:
-        data = box.run()
-        if not isinstance(data, tuple) or len(data) != NUM_CHANNELS:
-            continue
-        for ch in range(NUM_CHANNELS):
-            all_ch[ch].append(np.asarray(data[ch], dtype=np.float64))
-        total += len(data[0])
-        elapsed = time.perf_counter() - start
-        if total % 5000 < len(data[0]):
-            print(f"  {elapsed:.1f} s — {total} / {target_samples} samples")
-    baseline = np.array([np.concatenate(all_ch[ch]).mean() for ch in range(NUM_CHANNELS)], dtype=np.float64)
-    print(f"Baseline (mean per ch): {baseline}")
-    return baseline
+def _make_bandpass():
+    nyq = SAMPLE_RATE / 2.0
+    low = max(BANDPASS_LOW_HZ / nyq, 0.001)
+    high = min(BANDPASS_HIGH_HZ / nyq, 0.999)
+    b, a = scipy_signal.butter(4, [low, high], btype="band")
+    return b, a
+
+
+def _bandpass_chunk(x: np.ndarray, b: np.ndarray, a: np.ndarray, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Causal bandpass one chunk; returns (filtered, new_zi)."""
+    x = np.asarray(x, dtype=np.float64).ravel()
+    out, zf = scipy_signal.lfilter(b, a, x, zi=zi)
+    return out, zf
+
+
+def _threshold_high(baseline_ch: float, noise_std_ch: float | None, thresh_scale: float) -> float:
+    """Activation threshold: baseline + scale or baseline + k*noise_std when calibration has noise_std."""
+    if noise_std_ch is not None and noise_std_ch > 0:
+        return baseline_ch + max(thresh_scale * baseline_ch, NOISE_STD_K * noise_std_ch)
+    return baseline_ch * (1.0 + thresh_scale)
 
 
 def run(
     port: str = "/dev/cu.usbmodem101",
     buffer_size: int = 2000,
-    calibration_path: str | None = None,
-    calibration_duration_sec: float | None = None,
     threshold_offset: float | None = None,
+    ma_alpha: float | None = None,
+    calibration_path: str | None = None,
     plot_live: bool = True,
 ) -> None:
     """
-    Run calibration (or load from file), then stream EMG. When abs(signal - baseline) > threshold_offset,
-    channel is active and holds its key; when below deactivate_offset, release (with buffer).
+    Stream EMG -> bandpass -> level (configurable: max/rms/p95). Baseline from calibration
+    or initial window; "at rest" = level <= REST_PERCENTILE of recent levels; baseline EMA
+    updated only when at rest. Activate when level >= threshold_high; deactivate with hysteresis.
     """
-    thresh = threshold_offset if threshold_offset is not None else THRESHOLD_OFFSET
-    cal_sec = calibration_duration_sec if calibration_duration_sec is not None else CALIBRATION_DURATION_SEC
+    thresh_scale = threshold_offset if threshold_offset is not None else THRESHOLD_SCALE
+    deact_scale = DEACTIVATE_SCALE
+    alpha = ma_alpha if ma_alpha is not None else MA_ALPHA
 
-    baseline = None
+    # Load calibration if path given or default path exists
+    cal = None
     if calibration_path:
-        baseline = load_calibration(calibration_path)
-    if baseline is None and os.path.isdir(DEFAULT_CALIBRATION_DIR):
-        baseline = load_calibration(DEFAULT_CALIBRATION_DIR)
-    # If no file calibration, we'll run in-app calibration below (inside SpikerBox context)
+        cal = load_calibration(calibration_path)
+    if cal is None:
+        cal = load_calibration(DEFAULT_CALIBRATION_DIR)
+    noise_std = cal["noise_std"] if cal and cal.get("noise_std") is not None else None
+    if cal:
+        baseline = [float(cal["baseline"][ch]) for ch in range(NUM_CHANNELS)]
+        baseline_initialized = [True] * NUM_CHANNELS
+    else:
+        baseline = [0.0] * NUM_CHANNELS  # set from initial window
+        baseline_initialized = [False] * NUM_CHANNELS
 
-    deactivate_count = [0] * NUM_CHANNELS  # consecutive below-threshold chunks before release
+    b, a = _make_bandpass()
+    zi_list = [scipy_signal.lfilter_zi(b, a) * 0.0 for _ in range(NUM_CHANNELS)]
+    # Per-channel: recent levels for percentile-based rest detection (non-circular)
+    rest_level_deques = [collections.deque(maxlen=REST_WINDOW_CHUNKS) for _ in range(NUM_CHANNELS)]
+    initial_levels = [[] for _ in range(NUM_CHANNELS)]  # for initial baseline when no calibration
+    active = [False] * NUM_CHANNELS
     key_controller = KeyController()
 
-    # Live plot: ring buffer of recent abs(signal) per channel
     plot_len = int(SAMPLE_RATE * PLOT_HISTORY_SEC)
     plot_bufs = [collections.deque(maxlen=plot_len) for _ in range(NUM_CHANNELS)]
     fig, axes = None, None
@@ -90,7 +111,7 @@ def run(
         fig, axes = plt.subplots(NUM_CHANNELS, 1, sharex=True, figsize=(8, 4))
         if NUM_CHANNELS == 1:
             axes = [axes]
-        fig.suptitle("EMG (abs, baseline-subtracted) — Ch0: 'd', Ch1: 'a'")
+        fig.suptitle("EMG bandpass abs — Ch0: 'd', Ch1: 'a' (baseline + percentile rest, EMA when at rest)")
         line_handles = [ax.plot([], [], "b-", lw=0.8)[0] for ax in axes]
         thresh_lines = []
         for ch, ax in enumerate(axes):
@@ -102,94 +123,85 @@ def run(
         plt.ion()
         plt.show(block=False)
 
-    print(f"Keyboard control: port={port}, threshold={thresh}, deactivate<{DEACTIVATE_OFFSET}")
-    print("Channel 1 (index 0) -> hold 'd', Channel 2 (index 1) -> hold 'a'. Deactivate releases key.")
-    if plot_live:
-        print("Live plot enabled.")
-    print("Ctrl+C to stop.\n")
+    print(f"Keyboard control: port={port}, bandpass {BANDPASS_LOW_HZ}-{BANDPASS_HIGH_HZ} Hz, level={LEVEL_METRIC}")
+    if cal:
+        print(f"  Calibration loaded: baseline per channel, rest window={REST_WINDOW_CHUNKS} chunks, rest percentile={REST_PERCENTILE}")
+    else:
+        print(f"  No calibration: initial baseline from first {INITIAL_WINDOW_CHUNKS} chunks; run calibrate for best results.")
+    print("Ch0 -> 'd', Ch1 -> 'a'. Ctrl+C to stop.\n")
 
     try:
         with SpikerBox(port=port, input_buffer_size=buffer_size, num_channels=NUM_CHANNELS) as box:
-            if baseline is None:
-                baseline = run_calibration(box, cal_sec)
-            else:
-                baseline = np.asarray(baseline, dtype=np.float64)
-                if baseline.shape[0] != NUM_CHANNELS:
-                    baseline = np.array([baseline[0]] * NUM_CHANNELS, dtype=np.float64)
-
             while True:
                 data = box.run()
                 if not isinstance(data, tuple) or len(data) != NUM_CHANNELS:
                     continue
 
-                # Fixed thresholds (no MA): activate above thresh, deactivate below DEACTIVATE_OFFSET
                 levels = []
                 for ch in range(NUM_CHANNELS):
-                    arr = np.asarray(data[ch], dtype=np.float64) - baseline[ch]
-                    level = np.abs(arr).max()
+                    raw = np.asarray(data[ch], dtype=np.float64)
+                    filtered, zi_list[ch] = _bandpass_chunk(raw, b, a, zi_list[ch])
+                    level = compute_level(filtered, LEVEL_METRIC)
                     levels.append(level)
-                    if plot_live and plot_bufs[ch] is not None:
-                        for v in np.abs(arr).tolist():
+                    if plot_live:
+                        for v in np.abs(filtered).tolist():
                             plot_bufs[ch].append(v)
-                threshold_highs = [thresh] * NUM_CHANNELS
-                threshold_lows = [DEACTIVATE_OFFSET] * NUM_CHANNELS
+                    rest_level_deques[ch].append(level)
+                    # Initial baseline from first N chunks when no calibration
+                    if not baseline_initialized[ch]:
+                        initial_levels[ch].append(level)
+                        if len(initial_levels[ch]) >= INITIAL_WINDOW_CHUNKS:
+                            baseline[ch] = float(np.median(initial_levels[ch]))
+                            baseline_initialized[ch] = True
+                    else:
+                        # At rest = current level <= REST_PERCENTILE of recent levels (non-circular)
+                        at_rest = False
+                        if len(rest_level_deques[ch]) >= 2:
+                            p = np.percentile(list(rest_level_deques[ch]), REST_PERCENTILE * 100)
+                            at_rest = level <= p
+                        if at_rest:
+                            baseline[ch] = alpha * level + (1.0 - alpha) * baseline[ch]
 
-                # Only the channel with the bigger level (above its threshold) can be active
+                threshold_highs = [
+                    _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)
+                    for ch in range(NUM_CHANNELS)
+                ]
+                threshold_lows = [baseline[ch] * (1.0 + deact_scale) for ch in range(NUM_CHANNELS)]
+
                 candidates = [
                     ch for ch in range(NUM_CHANNELS)
-                    if levels[ch] >= threshold_highs[ch] and CHANNEL_KEYS.get(ch) is not None
+                    if baseline_initialized[ch] and levels[ch] >= threshold_highs[ch] and CHANNEL_KEYS.get(ch) is not None
                 ]
-                winner = None
-                if candidates:
-                    winner = max(candidates, key=lambda ch: levels[ch])
+                winner = max(candidates, key=lambda ch: levels[ch]) if candidates else None
 
                 for ch in range(NUM_CHANNELS):
                     key = CHANNEL_KEYS.get(ch)
                     if key is None:
                         continue
-                    th_high = threshold_highs[ch]
-                    th_low = threshold_lows[ch]
-                    level = levels[ch]
-
                     if ch == winner:
-                        deactivate_count[ch] = 0
                         if not active[ch]:
                             active[ch] = True
                             key_controller.press(key)
                     else:
-                        # This channel is not the winner: release if we were holding, or run deactivate buffer
                         if active[ch]:
-                            if winner is not None:
-                                # Other channel won, release immediately
-                                active[ch] = False
-                                deactivate_count[ch] = 0
-                                key_controller.release(key)
-                            elif level < th_low:
-                                deactivate_count[ch] += 1
-                                if deactivate_count[ch] >= DEACTIVATE_BUFFER_SAMPLES:
-                                    active[ch] = False
-                                    deactivate_count[ch] = 0
-                                    key_controller.release(key)
-                        else:
-                            deactivate_count[ch] = 0
+                            active[ch] = False
+                            key_controller.release(key)
 
                 if plot_live and fig is not None and plt.fignum_exists(fig.number):
                     n = len(plot_bufs[0])
                     if n > 0:
                         t = np.arange(n) / SAMPLE_RATE
-                        t = t - t[-1]  # time 0 = now
+                        t = t - t[-1]
                         for ch in range(NUM_CHANNELS):
                             y = np.array(plot_bufs[ch])
                             line_handles[ch].set_data(t, y)
                             l_high, l_low = thresh_lines[ch]
-                            l_high.set_data([t[0], t[-1]], [thresh, thresh])
-                            l_low.set_data([t[0], t[-1]], [DEACTIVATE_OFFSET, DEACTIVATE_OFFSET])
+                            th_high = _threshold_high(baseline[ch], noise_std[ch] if noise_std is not None else None, thresh_scale)
+                            l_high.set_data([t[0], t[-1]], [th_high, th_high])
+                            l_low.set_data([t[0], t[-1]], [threshold_lows[ch], threshold_lows[ch]])
                             axes[ch].relim()
                             axes[ch].autoscale_view(scalex=False)
-                            if active[ch]:
-                                axes[ch].set_facecolor("#ffe0e0")
-                            else:
-                                axes[ch].set_facecolor("white")
+                            axes[ch].set_facecolor("#ffe0e0" if active[ch] else "white")
                         fig.canvas.draw_idle()
                         plt.pause(0.001)
     finally:
@@ -204,23 +216,39 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="EMG keyboard control: calibration then channel 1 holds 'd', channel 2 holds 'a' (fixed threshold)."
+        description="EMG keyboard control: bandpass + per-channel baseline (calibration or initial window), Ch0->'d' Ch1->'a'."
     )
     parser.add_argument("--port", default="/dev/cu.usbmodem101", help="Serial port")
     parser.add_argument("--buffer-size", type=int, default=2000, help="Serial read buffer size")
-    parser.add_argument("--calibration", default=None, help="Path to calibration dir or .npz to skip in-app calibration")
-    parser.add_argument("--calibration-duration", type=float, default=None, help=f"Seconds to calibrate if no file (default: {CALIBRATION_DURATION_SEC})")
-    parser.add_argument("--threshold", type=float, default=None, help=f"Activation threshold on abs(signal-baseline) (default: {THRESHOLD_OFFSET})")
+    parser.add_argument("--threshold", type=float, default=None, help=f"Scale above baseline for activation (default: {THRESHOLD_SCALE})")
+    parser.add_argument("--ma-alpha", type=float, default=None, help=f"EMA alpha for baseline when at rest (default: {MA_ALPHA})")
+    parser.add_argument("--calibration", default=None, help="Path to calibration dir or .npz (default: " + DEFAULT_CALIBRATION_DIR + ")")
+    parser.add_argument("--calibrate", action="store_true", help="Run calibration first (hold still), save to --calibration or default dir, then run")
     parser.add_argument("--no-plot", action="store_true", help="Disable live plot")
     args = parser.parse_args()
+
+    calibration_path = args.calibration
+    if args.calibrate:
+        import os
+        from .calibrate import run_calibration
+        out_dir = calibration_path or DEFAULT_CALIBRATION_DIR
+        if out_dir.endswith(".npz"):
+            out_dir = os.path.dirname(out_dir) or "."
+        print("Running calibration (hold still)...")
+        result = run_calibration(port=args.port, out_dir=out_dir, buffer_size=args.buffer_size, duration_sec=CALIBRATION_DURATION_SEC)
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, CALIBRATION_FILENAME)
+        np.savez(path, baseline=result["baseline"], noise_std=result["noise_std"], sample_rate=SAMPLE_RATE, duration_sec=CALIBRATION_DURATION_SEC)
+        print(f"Calibration saved to {path}. Starting keyboard control.\n")
+        calibration_path = out_dir
 
     try:
         run(
             port=args.port,
             buffer_size=args.buffer_size,
-            calibration_path=args.calibration,
-            calibration_duration_sec=args.calibration_duration,
             threshold_offset=args.threshold,
+            ma_alpha=args.ma_alpha,
+            calibration_path=calibration_path,
             plot_live=not args.no_plot,
         )
     except KeyboardInterrupt:
